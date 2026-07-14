@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+
+###############################################################################
+# ONT Alignment Statistics
+#
+# Calculates alignment statistics from a sorted BAM file.
+#
+# Author : Your Name
+# Version: 2.0
+#
+# Usage:
+#   ./ont_alignment_stats.sh sample.sorted.bam
+#
+###############################################################################
+
+set -euo pipefail
+
+###########################################
+# Check arguments
+###########################################
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage:"
+    echo "  $0 <sorted.bam>"
+    exit 1
+fi
+
+BAM="$1"
+
+if [[ ! -f "$BAM" ]]; then
+    echo "ERROR: BAM file not found."
+    exit 1
+fi
+
+###########################################
+# Dependency check
+###########################################
+
+for tool in samtools awk grep sed date; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "ERROR: $tool not found."
+        exit 1
+    }
+done
+
+###########################################
+# Runtime
+###########################################
+
+START=$(date +%s)
+
+###########################################
+# Index BAM if necessary
+###########################################
+
+if [[ ! -f "${BAM}.bai" ]]; then
+    echo "[INFO] BAM index not found."
+    echo "[INFO] Building index..."
+    samtools index "$BAM"
+fi
+
+###########################################
+# NM tag check
+###########################################
+
+if ! samtools view "$BAM" | head -1 | grep -q "NM:i:"; then
+    echo "ERROR: NM tag not present in BAM."
+    exit 1
+fi
+
+###########################################
+# Output files
+###########################################
+
+PREFIX=$(basename "$BAM" .bam)
+
+REPORT="${PREFIX}_alignment_report.txt"
+CSV="${PREFIX}_summary.csv"
+
+###########################################
+# Read statistics
+###########################################
+
+TOTAL=$(samtools view -c "$BAM")
+PRIMARY=$(samtools view -c -F 2304 "$BAM")
+PRIMARY_MAPPED=$(samtools view -c -F 2308 "$BAM")
+
+if [[ "$PRIMARY_MAPPED" -eq 0 ]]; then
+    echo "No mapped reads."
+    exit 1
+fi
+
+###########################################
+# Alignment statistics
+###########################################
+
+read MATCH INS DEL NM <<EOF
+$(samtools view -F 2308 "$BAM" |
+awk '
+
+{
+    cigar=$6
+
+    while(match(cigar,/([0-9]+)([M=XID])/))
+    {
+        len=substr(cigar,RSTART,RLENGTH-1)
+        op=substr(cigar,RSTART+RLENGTH-1,1)
+
+        if(op=="M" || op=="=" || op=="X")
+            matchBases+=len
+
+        if(op=="I")
+            insertions+=len
+
+        if(op=="D")
+            deletions+=len
+
+        cigar=substr(cigar,RSTART+RLENGTH)
+    }
+
+    for(i=12;i<=NF;i++)
+    {
+        if($i~/^NM:i:/)
+        {
+            split($i,a,":")
+            nm+=a[3]
+        }
+    }
+
+}
+
+END{
+print matchBases+0,
+      insertions+0,
+      deletions+0,
+      nm+0
+}')
+EOF
+
+###########################################
+# Derived statistics
+###########################################
+
+MIS=$((NM-INS-DEL))
+
+AVGLEN=$(awk -v a=$MATCH -v b=$PRIMARY_MAPPED \
+'BEGIN{printf "%.2f",a/b}')
+
+AVGNM=$(awk -v a=$NM -v b=$PRIMARY_MAPPED \
+'BEGIN{printf "%.2f",a/b}')
+
+INSRATE=$(awk -v a=$INS -v b=$MATCH \
+'BEGIN{printf "%.3f",100*a/b}')
+
+DELRATE=$(awk -v a=$DEL -v b=$MATCH \
+'BEGIN{printf "%.3f",100*a/b}')
+
+MISRATE=$(awk -v a=$MIS -v b=$MATCH \
+'BEGIN{printf "%.3f",100*a/b}')
+
+TOTALRATE=$(awk -v a=$NM -v b=$MATCH \
+'BEGIN{printf "%.3f",100*a/b}')
+
+###########################################
+# Additional reports
+###########################################
+
+samtools idxstats "$BAM" > "${PREFIX}_idxstats.txt"
+
+samtools coverage "$BAM" > "${PREFIX}_coverage.txt"
+
+###########################################
+# Runtime
+###########################################
+
+END=$(date +%s)
+
+RUNTIME=$((END-START))
+
+###########################################
+# Text report
+###########################################
+
+{
+
+echo "=================================================="
+echo "ONT ALIGNMENT STATISTICS REPORT"
+echo "=================================================="
+echo
+
+echo "Date                    : $(date)"
+echo "BAM File                : $BAM"
+echo "Samtools Version        : $(samtools --version | head -1)"
+echo
+
+echo "---------------- READS ----------------"
+
+printf "%-30s %15d\n" "Total alignment records" "$TOTAL"
+printf "%-30s %15d\n" "Primary alignments" "$PRIMARY"
+printf "%-30s %15d\n" "Primary mapped reads" "$PRIMARY_MAPPED"
+
+echo
+
+echo "------------- BASE STATISTICS ----------"
+
+printf "%-30s %15d\n" "Matched bases" "$MATCH"
+printf "%-30s %15d\n" "Inserted bases" "$INS"
+printf "%-30s %15d\n" "Deleted bases" "$DEL"
+printf "%-30s %15d\n" "Mismatched bases" "$MIS"
+printf "%-30s %15d\n" "Total NM" "$NM"
+
+echo
+
+echo "-------------- AVERAGES ----------------"
+
+printf "%-30s %15.2f bp\n" "Average aligned length" "$AVGLEN"
+printf "%-30s %15.2f\n" "Average NM/read" "$AVGNM"
+
+echo
+
+echo "-------------- ERROR RATES ------------"
+
+printf "%-30s %15.3f %%\n" "Insertion rate" "$INSRATE"
+printf "%-30s %15.3f %%\n" "Deletion rate" "$DELRATE"
+printf "%-30s %15.3f %%\n" "Mismatch rate" "$MISRATE"
+printf "%-30s %15.3f %%\n" "Overall error rate" "$TOTALRATE"
+
+echo
+
+echo "Coverage Report         : ${PREFIX}_coverage.txt"
+echo "Idxstats Report         : ${PREFIX}_idxstats.txt"
+
+echo
+echo "Runtime                : ${RUNTIME} seconds"
+
+echo
+echo "=================================================="
+
+} | tee "$REPORT"
+
+###########################################
+# CSV summary
+###########################################
+
+echo "Sample,TotalReads,PrimaryReads,MappedReads,MatchedBases,InsertedBases,DeletedBases,MismatchedBases,NM,AvgAlignedLength,AvgNM,InsertionRate,DeletionRate,MismatchRate,OverallErrorRate" > "$CSV"
+
+echo "${PREFIX},${TOTAL},${PRIMARY},${PRIMARY_MAPPED},${MATCH},${INS},${DEL},${MIS},${NM},${AVGLEN},${AVGNM},${INSRATE},${DELRATE},${MISRATE},${TOTALRATE}" >> "$CSV"
+
+echo
+echo "[INFO] Report written to : $REPORT"
+echo "[INFO] CSV summary      : $CSV"
+echo "[INFO] Coverage report  : ${PREFIX}_coverage.txt"
+echo "[INFO] Idxstats report  : ${PREFIX}_idxstats.txt"
+echo "[INFO] Analysis complete."
