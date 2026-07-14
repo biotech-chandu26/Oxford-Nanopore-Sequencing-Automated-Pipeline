@@ -1,0 +1,110 @@
+#!/bin/bash
+
+###############################################################################
+# Oxford Nanopore RNA-Seq Automated Pipeline
+#
+# Organism : Trichiurus japonicus
+# Dataset  : SRR33408712
+# Platform : Oxford Nanopore Technologies
+#
+# Usage:
+# ./ont_rnaseq_pipeline.sh
+###############################################################################
+
+set -e
+set -o pipefail
+
+#############################
+# Configuration
+#############################
+
+SRR="SRR33408712"
+
+THREADS=32
+
+WORKDIR="/DATA3/Chandrajeet/ONT_files/T_japonicus"
+
+GENOME="GCA_050140585.1_TlG1_genomic.fna"
+
+GENOME_INDEX="GCA_050140585.1_TlG1_genomic.mmi"
+
+mkdir -p ${WORKDIR}
+
+cd ${WORKDIR}
+
+prefetch ${SRR} #Download SRA Dataset
+fasterq-dump \
+${SRR}/${SRR}.sra \
+-e ${THREADS} #Convert SRA to FASTQ
+
+gzip ${SRR}.fastq #Compress the FASTQ
+
+NanoPlot \
+--fastq ${SRR}.fastq.gz \
+--threads ${THREADS} \
+--outdir NanoPlot_raw #Quality check
+
+porechop \
+-i ${SRR}.fastq.gz \
+-o trimmed.fastq.gz \
+--threads ${THREADS} #Adapter trimming
+
+NanoPlot \
+--fastq trimmed.fastq.gz \
+--threads ${THREADS} \
+--outdir NanoPlot_trimmed #Quality check after trimming
+
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/050/140/585/GCA_050140585.1_TlG1/GCA_050140585.1_TlG1_genomic.fna.gz #Download the reference genome file
+
+gunzip GCA_050140585.1_TlG1_genomic.fna.gz #unzip the file
+
+minimap2 \
+-d GCA_050140585.1_TlG1_genomic.mmi \
+GCA_050140585.1_TlG1_genomic.fna #Alignment using Minimap2
+
+minimap2 \
+-ax splice \
+-uf \
+-t ${THREADS} \
+GCA_050140585.1_TlG1_genomic.mmi \
+trimmed.fastq.gz \
+| samtools sort \
+-@ ${THREADS} \
+-o SRR33408712.bam #Aligned reads
+
+samtools index SRR33408712.bam #Index BAM
+
+samtools flagstat SRR33408712.bam > flagstat.txt
+
+samtools stats SRR33408712.bam > alignment.stats
+
+samtools coverage SRR33408712.bam > coverage.txt #Alignment statistics
+
+seqkit fq2fa SRR33408712.fastq.gz \
+| head -2 \
+> query.fa #Create BLAST Query
+
+
+makeblastdb \
+-in GCA_050140585.1_TlG1_genomic.fna \
+-dbtype nucl \
+-parse_seqids \
+-out Tjaponicus_DB \
+-title "Trichiurus_japonicus_genome" #Create BLAST Database
+
+blastn \
+-query query.fa \
+-db Tjaponicus_DB \
+-task blastn \
+-perc_identity 90 \
+-evalue 1e-10 \
+-max_target_seqs 20 \
+-num_threads ${THREADS} \
+-outfmt "6 qseqid sseqid pident qcovs length mismatch gapopen qstart qend sstart send sstrand evalue bitscore" \
+-out blast_results.tsv #Run BLASTn
+
+#Usage
+./ont_rnaseq_pipeline.sh \
+    -s SRR33408712 \
+    -g https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/050/140/585/GCA_050140585.1_TlG1/GCA_050140585.1_TlG1_genomic.fna.gz \
+    -o Results
