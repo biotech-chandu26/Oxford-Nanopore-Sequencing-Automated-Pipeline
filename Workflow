@@ -1,0 +1,41 @@
+SRA
+ │
+ ▼
+prefetch
+ │
+ ▼
+fasterq-dump
+ │
+ ▼
+NanoPlot
+ │
+ ▼
+Porechop
+ │
+ ▼
+NanoPlot
+ │
+ ▼
+Reference Genome
+ │
+ ▼
+Minimap2 Index
+ │
+ ▼
+Alignment
+ │
+ ▼
+BAM
+ │
+ ├── flagstat
+ ├── stats
+ ├── coverage
+ │
+ ▼
+SeqKit
+ │
+ ▼
+BLAST
+ │
+ ▼
+Results
